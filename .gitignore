@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Secrets
+.env
+
+# Generated experiment data (fixtures, runs, analysis). See README "Output directory".
+outputs/
+# Local model cache (fastembed ONNX model)
+.cache/

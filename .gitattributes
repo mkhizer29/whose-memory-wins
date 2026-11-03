@@ -1,0 +1,3 @@
+# Keep LF everywhere: dataset/prompt hashes are computed over raw file bytes.
+* text=auto eol=lf
+*.png binary

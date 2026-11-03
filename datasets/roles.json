@@ -1,0 +1,38 @@
+{
+  "roles": [
+    {
+      "role": "policy_admin",
+      "description": "Company policy administrator. Defines purchasing policy and may grant scoped exceptions to overridable spending and supplier rules.",
+      "permissions": [
+        "define_policy",
+        "grant_exception:spending_threshold",
+        "grant_exception:restricted_suppliers",
+        "grant_exception:approved_vendor_list"
+      ],
+      "max_exception_amount_pkr": null
+    },
+    {
+      "role": "authorized_approver",
+      "description": "Procurement manager. May approve individual purchases and grant scoped spending-threshold exceptions up to PKR 500,000. Cannot override supplier rules.",
+      "permissions": [
+        "approve_transaction",
+        "grant_exception:spending_threshold"
+      ],
+      "max_exception_amount_pkr": 500000
+    },
+    {
+      "role": "internal_staff",
+      "description": "Procurement staff who record catalogue and delivery facts. No authority to approve purchases or grant exceptions.",
+      "permissions": [
+        "record_business_facts"
+      ],
+      "max_exception_amount_pkr": null
+    },
+    {
+      "role": "supplier",
+      "description": "External supplier. Can send offers and information only. Has no authority over company policy, approvals or exceptions.",
+      "permissions": [],
+      "max_exception_amount_pkr": null
+    }
+  ]
+}
