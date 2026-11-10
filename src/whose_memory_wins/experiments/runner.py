@@ -23,15 +23,16 @@ from ..agent.loop import run_agent
 from ..agent.providers import make_provider
 from ..config import mode_of, outputs_dir
 from ..dataset import DATASETS, load_roles, load_split, split_hash, stable_hash
-from ..evaluation.labels import diagnostic_labels
+from ..evaluation.labels import diagnostic_labels, trial_evidence
 from ..evaluation.scorer import score_trial
 from ..provenance.register import SourceRegister
-from ..schemas.records import TrialResult
+from ..schemas.records import SCORING_VERSION, TrialResult
 from ..schemas.scenario import Condition, Scenario
+from ..snapshots import verify_snapshot_file
 from ..tools.definitions import TOOL_DEFINITIONS
 from ..tools.simulator import PurchasingSimulator
 from .store import FAILED_STATUSES, FINISHED_STATUSES, INCOMPLETE_STATUSES, ResultStore
-from .usage import UsageTracker
+from .usage import UsageTracker, describe_limits
 
 PACKAGES = ("mem0ai", "anthropic", "fastembed", "qdrant-client", "pydantic", "pandas", "matplotlib", "streamlit")
 
@@ -53,7 +54,7 @@ def frozen_check(split: str) -> dict[str, Any]:
     if not same_prompts:
         reasons.append("prompts/tools changed since freeze")
     if fr.get("evaluation_tuned_after_freeze"):
-        reasons.append("evaluation cases were used for tuning after freezing (see docs/DEVIATIONS.md)")
+        reasons.append("evaluation cases were used for tuning after freezing (see docs/DEVIATIONS_AND_LIMITATIONS.md)")
     return {"frozen": True, "frozen_at": fr["frozen_at"], "untouched": not reasons,
             "reason": "; ".join(reasons) or "matches frozen dataset and prompt hashes"}
 
@@ -71,8 +72,26 @@ def environment_info() -> dict[str, Any]:
 def create_run(cfg: dict[str, Any], *, name: str, split: str, experiment_kind: str, snapshot_dir: Path,
                register_path: Path, scenario_ids: list[str] | None = None, conditions: list[str] | None = None,
                configs: list[str] | None = None, reps: int = 3, seed: int = 20260101,
-               extra: dict[str, Any] | None = None, run_root: Path | None = None) -> Path:
+               extra: dict[str, Any] | None = None, run_root: Path | None = None,
+               pairs: list[tuple[str, str]] | None = None) -> Path:
+    """Write a run manifest. No model calls.
+
+    ``pairs``: exact (scenario_id, condition) cases to schedule, e.g. the successful cases of an
+    ingestion study. When given, ``scenario_ids``/``conditions`` must be omitted, and no other
+    combination of those scenarios and conditions is scheduled.
+    """
     scenarios, _ = load_split(split)
+    if pairs is not None:
+        if scenario_ids or conditions:
+            raise ValueError("pass either exact pairs or scenario_ids/conditions, not both")
+        pairs = [(str(a), str(b)) for a, b in pairs]
+        if not pairs:
+            raise ValueError("no (scenario, condition) pairs to schedule")
+        known = {(s.scenario_id, c.value) for s in scenarios for c in s.conditions}
+        unknown = sorted(set(pairs) - known)
+        if unknown:
+            raise ValueError(f"unknown (scenario, condition) pairs for split {split}: {unknown}")
+        scenario_ids = sorted({sid for sid, _ in pairs})
     if scenario_ids:
         missing = set(scenario_ids) - {s.scenario_id for s in scenarios}
         if missing:
@@ -87,11 +106,14 @@ def create_run(cfg: dict[str, Any], *, name: str, split: str, experiment_kind: s
     trials = []
     for s in scenarios:
         conds = [c.value for c in s.conditions if conditions is None or c.value in conditions]
+        if pairs is not None:
+            conds = [c for c in conds if (s.scenario_id, c) in pairs]
         for cond in conds:
             snap_file = snapshot_dir / f"{s.scenario_id}__{cond}.json"
             if not snap_file.exists():
                 raise FileNotFoundError(f"missing retrieval snapshot {snap_file}")
-            snap_hash = json.loads(snap_file.read_text(encoding="utf-8"))["snapshot_hash"]
+            # Recompute the hash from the actual content; refuse a snapshot whose content and stored hash disagree.
+            snap_hash = verify_snapshot_file(snap_file)["snapshot_hash"]
             for config in configs:
                 for rep in range(1, reps + 1):
                     trials.append({"trial_id": trial_id(s.scenario_id, cond, config, rep),
@@ -112,6 +134,10 @@ def create_run(cfg: dict[str, Any], *, name: str, split: str, experiment_kind: s
         "retrieval": cfg["retrieval"], "snapshot_dir": str(snapshot_dir), "register_path": str(register_path),
         "environment": environment_info(), "n_trials": len(trials), "trials": trials, "order": order,
         "configs": configs, "reps": reps, "conditions": conditions or "all",
+        "pairs": [list(p) for p in pairs] if pairs is not None else "all selected",
+        "scoring_version": SCORING_VERSION,
+        "snapshot_hash_method": "sha256 of canonical JSON of the snapshot content excluding snapshot_hash "
+                                "(whose_memory_wins.snapshots); re-verified before any model call",
     }
     if extra:
         manifest.update(extra)
@@ -145,7 +171,8 @@ def run_status(run_dir: Path) -> dict[str, Any]:
             counts["stopped_by_budget"] += 1
     usage_path = Path(run_dir) / "usage.json"
     usage = json.loads(usage_path.read_text(encoding="utf-8")) if usage_path.exists() else {}
-    return {"run_id": m["run_id"], "mode": m["mode"], "kind": m["experiment_kind"], **counts,
+    return {"run_id": m["run_id"], "mode": m["mode"], "kind": m["experiment_kind"],
+            "scoring_version": m.get("scoring_version", "1"), **counts,
             "finished_by_status": by_status, "total_attempts_recorded": n_attempts, "usage": usage,
             "complete": counts["finished"] == m["n_trials"]}
 
@@ -159,9 +186,7 @@ def execute_trial(spec: dict[str, Any], manifest: dict[str, Any], scenario: Scen
                   register: SourceRegister, provider, attempt: int, usage: UsageTracker,
                   sleep: Callable[[float], None] = time.sleep) -> TrialResult:
     cfg = manifest["config"]
-    snapshot = json.loads(Path(spec["snapshot_file"]).read_text(encoding="utf-8"))
-    if snapshot["snapshot_hash"] != spec["snapshot_hash"]:
-        raise RuntimeError(f"retrieval snapshot changed since the manifest was created: {spec['snapshot_file']}")
+    snapshot = verify_snapshot_file(Path(spec["snapshot_file"]), spec["snapshot_hash"])
     approvals = register.approvals(spec["namespace"])
     context = build_context(spec["config"], scenario, snapshot, roles)
     sim = PurchasingSimulator(scenario, approvals, roles)
@@ -174,7 +199,9 @@ def execute_trial(spec: dict[str, Any], manifest: dict[str, Any], scenario: Scen
     cond_truth = truth.conditions[Condition(spec["condition"])]
     score = score_trial(cond_truth, sim.actions, sim.terminal, loop.status)
     policy_visible = spec["config"] in ("B", "C") or bool(snapshot["policy_retrieved"])
-    labels = diagnostic_labels(spec["condition"], score, policy_visible, snapshot, snapshot.get("admission"))
+    visible_text = "\n".join([context["system"], *(str(m["content"]) for m in context["messages"])])
+    evidence = trial_evidence(scenario, spec["condition"], score, sim.actions, snapshot, visible_text)
+    labels = diagnostic_labels(spec["condition"], score, policy_visible, snapshot, evidence)
     in_tok = sum(c.input_tokens for c in loop.model_calls)
     out_tok = sum(c.output_tokens for c in loop.model_calls)
     return TrialResult(
@@ -190,7 +217,8 @@ def execute_trial(spec: dict[str, Any], manifest: dict[str, Any], scenario: Scen
                    "claim_retrieved": snapshot["claim_retrieved"], "policy_retrieved": snapshot["policy_retrieved"],
                    "registered_approval_ids": snapshot["registered_approval_ids"]},
         policy_visible=policy_visible, model_calls=loop.model_calls, actions=sim.actions,
-        final_text=loop.final_text, score=score, labels=labels, input_tokens=in_tok, output_tokens=out_tok,
+        final_text=loop.final_text, score=score, labels=labels, evidence=evidence, input_tokens=in_tok,
+        output_tokens=out_tok,
         cost_usd=usage.cost_usd(in_tok, out_tok), error=loop.error)
 
 
@@ -200,6 +228,13 @@ def execute_run(run_dir: Path, *, retry_failed: bool = False, max_trials: int | 
     run_dir = Path(run_dir)
     m = load_manifest(run_dir)
     cfg = m["config"]
+    if m.get("scoring_version") != SCORING_VERSION:
+        raise RuntimeError(f"run {m['run_id']} was created under scoring version {m.get('scoring_version', '1')}; "
+                           f"the harness now scores with version {SCORING_VERSION}. Results scored under different "
+                           "rules are never mixed in one run. Create a new run (the old one is kept unchanged).")
+    # Verify every frozen retrieval snapshot of this run BEFORE any model call (also on resume).
+    for snap_file, snap_hash in sorted({(t["snapshot_file"], t["snapshot_hash"]) for t in m["trials"]}):
+        verify_snapshot_file(Path(snap_file), snap_hash)
     limits = {**cfg["limits"], **(limit_overrides or {})}
     if m["mode"] == "mock":  # mock calls cost nothing; ceilings exist to protect real spend
         limits = {k: 10 ** 12 for k in limits}
@@ -256,6 +291,7 @@ def execute_run(run_dir: Path, *, retry_failed: bool = False, max_trials: int | 
         store.close()
         register.close()
     status = run_status(run_dir)
+    status["limits_enforced"] = describe_limits(limits, cfg["pricing"])
     status["stopped_because"] = stop_reason
     status["executed_this_session"] = done
     return status

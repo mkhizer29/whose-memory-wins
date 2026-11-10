@@ -88,25 +88,49 @@ The CLI works without the dashboard.
 | Run the offline tests | `pytest` (about 5 minutes; the real-API test is skipped) |
 | Offline MOCK demonstration (no API) | `wmw demo` (try `--policy gullible`) |
 | Build Track 1 memory fixtures (offline) | `wmw fixtures --split development` / `--split evaluation` |
-| One real development case under A/B/C | `wmw run create --mode real --name dev01 --split development --scenarios DEV-01 --reps 1` then `wmw run execute --run <run_id> --yes-real` |
-| Small paid pilot (e.g. 4 scenarios, 1 rep) | `wmw run create --mode real --name pilot --split evaluation --scenarios EVAL-SPEND-01,EVAL-SPEND-03,EVAL-SUPP-01,EVAL-SUPP-06 --reps 1` then `wmw run execute --run <run_id> --yes-real` |
+| Small paid pilot: 1 **development** scenario x clean/untrusted/authorized x A/B/C x 1 rep = **9 decisions** | `wmw run create --mode real --name pilot-dev01 --split development --scenarios DEV-01 --conditions clean,untrusted_claim,authorized_exception --configs A,B,C --reps 1` then `wmw run execute --run <run_id> --yes-real --max-api-calls 108` (see section 3a) |
 | Freeze the held-out dataset + prompt hashes | `wmw dataset freeze` (do this **before** the final run) |
 | Generate the full 648-trial manifest | `wmw run create --mode real --name main --split evaluation --reps 3` |
 | Start / resume an experiment | `wmw run execute --run <run_id> --yes-real` (re-run the same command to resume) |
 | Limit a session | add `--max-trials 50` and/or `--max-api-calls 300` |
 | Retry trials that failed with API errors | add `--retry-failed` (old attempts are kept) |
 | Progress (completed / failed / budget-stopped / pending) | `wmw run status --run <run_id>`; list all runs: `wmw run list` |
-| Supplementary normal-ingestion study | `wmw ingest run --mode real --name ing1 --yes-real` (6 default scenarios x 2 conditions) |
+| Supplementary normal-ingestion study | `wmw ingest run --mode real --name ing1 --yes-real` (6 default scenarios x 2 conditions; add `--configs A,B,C`). Decision trials are created only for the exact scenario/condition cases whose ingestion succeeded; failed cases stay in the admission report and its denominator |
 | Review memory admission manually | `wmw ingest review --study <study_dir> --case EVAL-SPEND-01__untrusted_claim --label retained --note "..."` |
 | Analysis (metrics, CSVs, charts) | `wmw analyze --run <run_id>` |
 | Memory-removal diagnostic rerun | `wmw diagnose --run <run_id> --scenario EVAL-SPEND-01 --condition untrusted_claim --remove claim` |
 | Open the dashboard | `wmw dashboard` (then open http://localhost:8501) |
 
-**Spending safety.** Real runs never start automatically. They need `--yes-real` and are capped
-by `limits` in `configs/default.yaml` (`max_api_calls: 60` by default; raise it on purpose). The
-ceiling is cumulative per run and checked before every trial and every API call. Prices are not
-hard-coded: fill in `pricing` yourself if you want a USD estimate. Otherwise cost is reported
-as unknown.
+**Spending safety.** Real runs never start automatically. They need `--yes-real` and are bounded
+by `limits` in `configs/default.yaml`. The limits are cumulative per run, for the decision model
+only, and are checked **before** every trial and every request:
+
+| Setting | How it is enforced |
+|---|---|
+| `max_api_calls` (default 60) | Hard ceiling. Every request attempt counts, including retried transient failures. A trial is not started unless a worst-case trial (4 calls x 3 attempts = 12) still fits. |
+| `max_output_tokens` | Hard ceiling. Each request first reserves its full `max_tokens`; if used + reserved would exceed the ceiling, the request is not sent. |
+| `max_input_tokens` | Checked against a conservative pre-request estimate of the input size (request bytes + overhead). An estimate, not a guarantee. |
+| `pricing.stop_after_cost_usd` | A **stop-after threshold, not a guaranteed cap**. Only active when both prices are filled in: the same reservations are priced, and a request is not started if its estimated worst case would cross the threshold. Billing can still differ (hand-entered prices, estimated input). If prices are missing, `wmw check-config` reports the threshold as NOT ENFORCED and real runs refuse to start. |
+
+Prices are not hard-coded; without them, cost is reported as unknown.
+
+**Mem0 ingestion (Track 2) is counted separately.** Every call Mem0 makes to its extraction LLM
+counts against `max_api_calls` for that study (a hard call ceiling). Mem0 does not report token
+usage, so **no token or dollar limit applies to ingestion**; embeddings run locally and cost
+nothing. The decision run created from an ingestion study then has its own, separate ceilings.
+
+### 3a. The nine-decision pilot (development data only)
+
+The pilot uses one **development** scenario (DEV-01) with its clean, untrusted-claim and
+authorized-exception conditions under configurations A, B and C, once each: 3 x 3 x 1 = 9
+decisions. Held-out evaluation scenarios (`EVAL-*`) are **not** used for piloting or tuning; they
+are reserved for the frozen final run. `--max-api-calls 108` (9 trials x 12 worst-case calls) lets
+all nine trials start; a typical trial uses 1-2 calls.
+
+**Scoring rules are versioned** (current: version 2, see `docs/INTERPRETING_RESULTS.md`). Every
+results row, trace, manifest and analysis states its scoring version. Runs created before
+version 2 are analysed with a warning, their "valid output" numbers are marked unavailable, and
+they cannot be resumed (create a new run instead); their files are never modified.
 
 ## 4. Repository layout
 

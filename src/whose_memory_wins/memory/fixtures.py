@@ -22,6 +22,7 @@ from ..dataset import load_roles, load_split, split_hash, stable_hash
 from ..policies.engine import evaluate_policies
 from ..provenance.register import SourceRegister
 from ..schemas.scenario import Condition, RoleCatalog, Scenario
+from ..snapshots import finalize_snapshot, write_snapshot
 from .mem0_store import Mem0Store
 
 
@@ -137,8 +138,7 @@ def snapshot_retrieval(store: Mem0Store, register: SourceRegister, scenario: Sce
     }
     if extra:
         snap.update(extra)
-    snap["snapshot_hash"] = stable_hash({k: v for k, v in snap.items() if k != "snapshot_hash"})
-    return snap
+    return finalize_snapshot(snap)  # canonical content hash; must stay the last change to `snap`
 
 
 def build_controlled_fixture(split: str, outputs: Path, retrieval: dict, rebuild: bool = False,
@@ -170,7 +170,7 @@ def build_controlled_fixture(split: str, outputs: Path, retrieval: dict, rebuild
                 snap = snapshot_retrieval(store, register, s, cond.value, ns, retrieval)
             finally:
                 store.close()
-            (fdir / "retrieval" / f"{ns}.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
+            write_snapshot(fdir / "retrieval" / f"{ns}.json", snap)
         log(f"  fixture: {s.scenario_id} ({len(s.conditions)} conditions)")
     (fdir / "inserted_records.json").write_text(json.dumps(inserted_all, indent=2), encoding="utf-8")
     (fdir / "source_register_export.json").write_text(json.dumps(register.export(), indent=2, default=str),

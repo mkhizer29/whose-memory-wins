@@ -63,6 +63,14 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
     pr = cfg["pricing"]
     if (pr.get("usd_per_million_input_tokens") is None) != (pr.get("usd_per_million_output_tokens") is None):
         errs.append("pricing: set both input and output prices, or neither")
+    if pr.get("max_cost_usd") is not None:
+        errs.append("pricing.max_cost_usd was renamed to pricing.stop_after_cost_usd (a stop-after threshold, "
+                    "not a guaranteed cap)")
+    thr = pr.get("stop_after_cost_usd", pr.get("max_cost_usd"))
+    if thr is not None and (pr.get("usd_per_million_input_tokens") is None
+                            or pr.get("usd_per_million_output_tokens") is None):
+        errs.append("pricing.stop_after_cost_usd is set but prices are missing, so it cannot be enforced; "
+                    "set both prices or remove the threshold")
     return errs
 
 

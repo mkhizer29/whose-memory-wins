@@ -8,11 +8,10 @@ are not back-filled with the next search hit (the retrieval is not re-run).
 from __future__ import annotations
 
 import datetime as dt
-import json
 from pathlib import Path
 
 from ..config import outputs_dir
-from ..dataset import stable_hash
+from ..snapshots import verify_snapshot_file, write_snapshot
 from .runner import create_run, load_manifest
 
 
@@ -21,7 +20,9 @@ def create_removal_run(source_run: Path, scenario_id: str, condition: str, remov
     m = load_manifest(source_run)
     cfg = m["config"]
     snap_file = Path(m["snapshot_dir"]) / f"{scenario_id}__{condition}.json"
-    snap = json.loads(snap_file.read_text(encoding="utf-8"))
+    expected = next((t["snapshot_hash"] for t in m["trials"]
+                     if t["scenario_id"] == scenario_id and t["condition"] == condition), None)
+    snap = verify_snapshot_file(snap_file, expected)  # never derive a diagnostic from a tampered snapshot
     keep, removed = [], []
     for i, r in enumerate(snap["records"]):
         label = f"M{i + 1}"
@@ -40,9 +41,7 @@ def create_removal_run(source_run: Path, scenario_id: str, condition: str, remov
     new["policy_retrieved"] = any(r["metadata"].get("wmw_policy_id") in snap["applicable_policy_ids"] for r in keep)
     new["diagnostic_removed"] = [{"id": r["id"], "text": r["text"]} for r in removed]
     new["derived_from_snapshot"] = snap["snapshot_hash"]
-    new.pop("snapshot_hash")
-    new["snapshot_hash"] = stable_hash(new)
-    (ddir / "retrieval" / snap_file.name).write_text(json.dumps(new, indent=2), encoding="utf-8")
+    write_snapshot(ddir / "retrieval" / snap_file.name, new)  # canonical hash of the final content
     return create_run(cfg, name=f"removal-{scenario_id}", split=m["split"], experiment_kind="diagnostic_removal",
                       snapshot_dir=ddir / "retrieval", register_path=Path(m["register_path"]),
                       scenario_ids=[scenario_id], conditions=[condition], configs=configs or m["configs"],

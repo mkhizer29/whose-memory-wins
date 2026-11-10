@@ -230,33 +230,25 @@ elif page in ("Comparison viewer", "Results", "Trial detail"):
         res = compute(run_dir)
         if res["provisional"]:
             st.warning(f"PROVISIONAL - {res['progress']}. Missing trials are not evidence of safety.")
+        if res["scoring_warning"]:
+            st.warning(f"Scoring rules: {res['scoring_warning']}")
+        if res["admission_vs_trace_conflicts"]:
+            st.warning(f"{len(res['admission_vs_trace_conflicts'])} trial(s) where the manual admission review and "
+                       "the trace evidence disagree (see metrics.json: admission_vs_trace_conflicts).")
         fam = st.multiselect("Family", sorted(df["family"].unique()), default=sorted(df["family"].unique()))
         conds = st.multiselect("Condition", sorted(df["condition"].unique()), default=sorted(df["condition"].unique()))
         cfgs = st.multiselect("Configuration", sorted(df["config"].unique()), default=sorted(df["config"].unique()))
-        from whose_memory_wins.analysis.metrics import group_metrics
+        from whose_memory_wins.analysis.metrics import results_table
         sub = df[df.family.isin(fam) & df.condition.isin(conds) & df.config.isin(cfgs)]
-        rows = []
-        for cfg, g in sub.groupby("config"):
-            gm = group_metrics(g)
-            rows.append({"config": cfg, "planned": gm["planned"], "finished": gm["finished"],
-                         "unauthorized attempts": pct(gm["unauthorized_attempt_rate"]),
-                         "unauth. (conflict-relevant)": pct(gm["unauthorized_attempt_rate_conflict_relevant"]),
-                         "unauth. | valid output": pct(gm["unauthorized_attempt_rate_given_valid_output"]),
-                         "clean success": pct(gm["clean_success"]),
-                         "authorized-exception success": pct(gm["authorized_exception_success"]),
-                         "unnecessary approvals": pct(gm["unnecessary_approval_requests"]),
-                         "declines": pct(gm["declines_of_legitimate_tasks"]),
-                         "valid-output coverage": pct(gm["valid_output_coverage"]),
-                         "policy visibility": pct(gm["policy_visibility"]),
-                         "API errors": gm["api_errors"], "invalid outputs": gm["invalid_outputs"],
-                         "step-limit": gm["step_limit_failures"], "refusal stops": gm["model_refusal_stops"],
-                         "pending": gm["pending"]})
+        rows = results_table(sub)  # same rows as `wmw analyze` and results_table.csv
         st.subheader("Metrics (k/n, n = planned trials in the filtered group)")
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         st.subheader("Paired comparisons (scenario = sampling unit)")
         st.dataframe(pd.DataFrame(res["comparisons"]), hide_index=True, width="stretch")
         st.subheader("Diagnostic label counts (overlapping observations, not causes)")
         st.json(res["label_counts"])
+        st.caption("Prohibited attempts by claim evidence (claim_status): "
+                   + json.dumps({c: g["prohibited_attempts_by_claim_status"] for c, g in res["by_config"].items()}))
         img = OUT / "analysis" / run_dir.name / "core_metrics.png"
         if img.exists():
             st.image(str(img), caption="From `wmw analyze` (re-run it to refresh)")
@@ -272,7 +264,10 @@ elif page in ("Comparison viewer", "Results", "Trial detail"):
         t = store.load_trace(next(a["trace_file"] for a in attempts if a["attempt"] == att))
         st.subheader(f"{tid} (attempt {att}) - mode {t['mode'].upper()}")
         st.markdown(f"**Score:** {t['score']['rule_applied']} - {t['score']['explanation']}")
-        st.markdown(f"**Labels:** {t['labels']}  |  **Policy visible:** {t['policy_visible']}")
+        st.markdown(f"**Labels:** {t['labels']}  |  **Policy visible:** {t['policy_visible']}  |  "
+                    f"**Scoring version:** {t['score'].get('scoring_version', '1')}")
+        if t.get("evidence"):
+            st.caption(f"Trace evidence: {t['evidence']}")
         if t["error"]:
             st.error(t["error"])
         st.markdown("**Exact model-visible system prompt**")
@@ -304,6 +299,10 @@ elif page == "Ingestion study":
     st.metric("Memory admission (retained / attempted)", summ["admission_rate"])
     st.dataframe(pd.DataFrame(summ["rows"]), hide_index=True, width="stretch")
     case = st.selectbox("Case", [r["case"] for r in summ["rows"]])
+    if not (sdir / "admission" / f"{case}.json").exists():
+        st.error("Ingestion failed for this case; it has no snapshot or admission review, but it stays in the "
+                 "attempted-case denominator.")
+        st.stop()
     d = json.loads((sdir / "admission" / f"{case}.json").read_text(encoding="utf-8"))
     st.markdown(f"**Claim message:** {d['claim_message_text']}")
     st.markdown("**Records derived from the claim message:**")

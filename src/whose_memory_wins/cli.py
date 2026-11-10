@@ -55,8 +55,10 @@ def _guard_real(cfg: dict, args) -> None:
 def cmd_check_config(args) -> None:
     cfg = _cfg(args)
     errs = validate_config(cfg)
+    from .experiments.usage import describe_limits
     out = {"mode": mode_of(cfg), "decision_model": cfg["decision_model"]["model"],
-           "config_errors": errs, "credentials": credential_status()}
+           "config_errors": errs, "credentials": credential_status(),
+           "limits_enforced_for_real_runs": describe_limits(cfg["limits"], cfg["pricing"])}
     if args.ping:
         if mode_of(cfg) != "real":
             out["ping"] = "skipped (mock mode)"
@@ -99,7 +101,7 @@ def cmd_dataset_freeze(args) -> None:
             "splits": {s: split_hash(s) for s in SPLITS}, "prompt_hashes": prompt_hashes(),
             "evaluation_tuned_after_freeze": False,
             "note": "Evaluation cases must not be used to tune prompts/code after this point. If they are, set "
-                    "evaluation_tuned_after_freeze=true and record it in docs/DEVIATIONS.md."}
+                    "evaluation_tuned_after_freeze=true and record it in docs/DEVIATIONS_AND_LIMITATIONS.md."}
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     _print(data)
 
@@ -135,6 +137,10 @@ def cmd_run_execute(args) -> None:
     run_dir = _resolve_run(cfg, args.run)
     m = load_manifest(run_dir)
     _guard_real(m["config"], args)
+    if m["mode"] == "real":
+        errs = validate_config(m["config"])
+        if errs:
+            raise SystemExit(f"refusing to execute: the run's config is invalid: {errs}")
     overrides = {k: v for k, v in {"max_api_calls": args.max_api_calls}.items() if v is not None}
     st = execute_run(run_dir, retry_failed=args.retry_failed, max_trials=args.max_trials,
                      limit_overrides=overrides or None)
@@ -155,42 +161,45 @@ def cmd_run_list(args) -> None:
             print(f"{st['run_id']:<60} {st['kind']:<20} finished {st['finished']}/{st['planned']}")
 
 
+def analysis_brief(res: dict, out: Path) -> dict:
+    """CLI summary. Uses the same table rows as the dashboard and results_table.csv."""
+    return {"run_id": res["run_id"], "mode": res["mode"], "provisional": res["provisional"],
+            "scoring_version": res["scoring_version"], "scoring_warning": res["scoring_warning"],
+            "progress": res["progress"], "by_config": {r["config"]: r for r in res["results_table"]},
+            "prohibited_attempts_by_claim_status": {c: g["prohibited_attempts_by_claim_status"]
+                                                    for c, g in res["by_config"].items()},
+            "admission_vs_trace_conflicts": len(res["admission_vs_trace_conflicts"]),
+            "comparisons": res["comparisons"], "output_dir": str(out)}
+
+
 def cmd_analyze(args) -> None:
     from .analysis.report import write_report
     cfg = _cfg(args)
     run_dir = _resolve_run(cfg, args.run)
     out = outputs_dir(cfg) / "analysis" / run_dir.name
     res = write_report(run_dir, out)
-    brief = {"run_id": res["run_id"], "mode": res["mode"], "provisional": res["provisional"],
-             "progress": res["progress"],
-             "by_config": {c: {k: g[k]["display"] for k in ("unauthorized_attempt_rate",
-                                                             "unauthorized_attempt_rate_given_valid_output",
-                                                             "clean_success", "authorized_exception_success",
-                                                             "valid_output_coverage", "policy_visibility")}
-                           for c, g in res["by_config"].items()},
-             "comparisons": res["comparisons"], "output_dir": str(out)}
-    _print(brief)
+    _print(analysis_brief(res, out))
 
 
 def cmd_ingest_run(args) -> None:
-    from .experiments.ingestion import admission_summary, run_ingestion_study
-    from .experiments.runner import create_run
+    from .experiments.ingestion import admission_summary, create_decision_run_for_study, run_ingestion_study
     cfg = _cfg(args)
     _guard_real(cfg, args)
+    if mode_of(cfg) == "real":
+        print(f"Mem0 ingestion: hard ceiling of {cfg['limits']['max_api_calls']} extraction-LLM calls for the "
+              "whole study. Mem0 does not report tokens, so NO token or dollar limit applies to ingestion.")
     sdir = run_ingestion_study(cfg, name=args.name, scenario_ids=_csv(args.scenarios),
                                conditions=_csv(args.conditions))
     print(f"Ingestion study written to {sdir}")
     _print(admission_summary(sdir))
-    m = json.loads((sdir / "study_manifest.json").read_text())
-    ok = [c["namespace"] for c in m["cases"] if c["status"] == "ok"]
-    if not ok:
-        raise SystemExit("no successful ingestion cases; no decision run created")
-    run_dir = create_run(cfg, name=f"ingest-{args.name}", split=m["split"], experiment_kind="ingestion",
-                         snapshot_dir=sdir / "retrieval", register_path=sdir / "source_register.sqlite",
-                         scenario_ids=sorted({n.split("__")[0] for n in ok}),
-                         conditions=sorted({n.split("__")[1] for n in ok}), reps=args.reps, seed=args.seed,
-                         extra={"ingestion_study": str(sdir)})
-    print(f"Created decision run {run_dir.name} for the frozen ingestion snapshots. Execute it with:\n"
+    try:
+        run_dir = create_decision_run_for_study(cfg, sdir, name=f"ingest-{args.name}", reps=args.reps,
+                                                seed=args.seed, configs=_csv(args.configs))
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    n = json.loads((run_dir / "manifest.json").read_text())["n_trials"]
+    print(f"Created decision run {run_dir.name} ({n} trials) for the successful ingestion cases only. "
+          "Execute it with:\n"
           f"  wmw run execute --run {run_dir.name}" + (" --yes-real" if mode_of(cfg) == "real" else ""))
 
 
@@ -287,6 +296,7 @@ def main(argv: list[str] | None = None) -> None:
     q.add_argument("--mode", choices=["mock", "real"], required=True)
     q.add_argument("--name", required=True)
     q.add_argument("--scenarios"); q.add_argument("--conditions")
+    q.add_argument("--configs", help="comma list of configurations for the decision run (default A,B,C)")
     q.add_argument("--reps", type=int, default=1); q.add_argument("--seed", type=int, default=20260102)
     q.add_argument("--yes-real", action="store_true")
     q.set_defaults(func=cmd_ingest_run)

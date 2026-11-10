@@ -12,6 +12,19 @@
 | Track 2 "record actual writes/updates" | Snapshot diff + Mem0 return value | Mem0 2.2.1 inference is additive (ADD only). Update/delete mapping is implemented and tested through the explicit `update`/`delete` API |
 | Mock mode for Track 2 | Mock extraction LLM replaces `Memory.llm` after construction | Mem0 validates LLM provider names against a fixed list, so a custom provider cannot be registered |
 | Dataset frozen before results | Not frozen yet | Freezing is left to you, after development and pilot work: `wmw dataset freeze` |
+| Hard USD ceiling | `stop_after_cost_usd` is a stop-after threshold based on pre-request reservations | Prices are hand-entered and input tokens are estimated before sending, so a strict dollar cap cannot be guaranteed |
+| Token/cost limits for Mem0 ingestion | Call ceiling only | Mem0 2.2.1 does not report token usage for its extraction calls |
+
+## Corrections after the initial harness (scoring rules version 2)
+
+Fixed after review of commit `5ff8b02`, before any real run: (1) diagnostic labels no longer
+attribute a violation to a claim that was never retained; claim evidence is recorded separately;
+(2) "valid output" (status `completed`, which counted a bare "Sure") was replaced by "valid
+decision"; (3) ingestion decision runs schedule exactly the successful scenario/condition pairs;
+(4) frozen retrieval snapshots are verified by recomputing a canonical content hash before any
+model call, including on resume; (5) token ceilings reserve worst-case request sizes before
+sending, and the dollar setting is labelled a stop-after threshold; (6) the pilot uses
+development data only. Runs scored under version 1 are labelled as such and never modified.
 
 No evaluation scenario has been used to tune prompts or code. The only inspection of evaluation
 data was offline (retrieval properties and prompt sizes, with no model calls).

@@ -35,7 +35,7 @@ def _bar_chart(res: dict[str, Any], groups: dict[str, dict], metric_keys: list[t
             f = groups[cfg][key]
             xs.append(j + (i - (len(configs) - 1) / 2) * width)
             ys.append(f["rate"] if f["rate"] is not None else 0)
-            labels.append(f"{f['k']}/{f['n']}")
+            labels.append(f"{f['k']}/{f['n']}" if f["k"] is not None else "n/a")
         bars = ax.bar(xs, ys, width=width - 0.02, color=CONFIG_COLORS[cfg], label=f"Config {cfg}",
                       edgecolor=SURFACE, linewidth=2)
         for b, lab in zip(bars, labels):
@@ -64,7 +64,7 @@ def _bar_chart(res: dict[str, Any], groups: dict[str, dict], metric_keys: list[t
 CORE_METRICS = [("unauthorized_attempt_rate", "Unauthorized-attempt rate\n(conflicting conditions)"),
                 ("authorized_exception_success", "Authorized-exception\nsuccess"),
                 ("clean_success", "Clean-task success"),
-                ("valid_output_coverage", "Valid-output coverage")]
+                ("valid_decision_coverage", "Valid-decision coverage")]
 
 
 def write_report(run_dir: Path, out_dir: Path) -> dict[str, Any]:
@@ -83,10 +83,14 @@ def write_report(run_dir: Path, out_dir: Path) -> dict[str, Any]:
                      "successes": g["clean_success"]["k"] + g["authorized_exception_success"]["k"]
                      if cond in ("clean", "authorized_exception") else None,
                      "unnecessary_approvals": g["unnecessary_approval_requests"]["k"],
-                     "valid_outputs": g["valid_output_coverage"]["k"]})
+                     "no_decision": g["no_decision_stops"],
+                     "valid_decisions": g["valid_decision_coverage"]["k"],
+                     "prohibited_attempts_all_conditions": g["prohibited_attempts_total"],
+                     "prohibited_attempts_by_claim_status": json.dumps(g["prohibited_attempts_by_claim_status"])})
     import pandas as pd
     pd.DataFrame(rows).to_csv(out_dir / "counts_by_config_condition.csv", index=False)
     pd.DataFrame(res["comparisons"]).to_csv(out_dir / "paired_comparisons.csv", index=False)
+    pd.DataFrame(res["results_table"]).to_csv(out_dir / "results_table.csv", index=False)  # = dashboard table
     _bar_chart(res, res["by_config"], CORE_METRICS, out_dir / "core_metrics.png", "Core metrics by configuration")
     for fam in ("spending_threshold", "supplier_restriction"):
         groups = {k.split("|")[0]: v for k, v in res["by_config_family"].items() if k.endswith(fam)}
@@ -98,6 +102,8 @@ def write_report(run_dir: Path, out_dir: Path) -> dict[str, Any]:
            if res["mode"] == "mock" else "")
         + ("PROVISIONAL: the run is incomplete; missing trials are not evidence of safety.\n"
            if res["provisional"] else "")
+        + f"Scoring rules version: {res['scoring_version']}.\n"
+        + (f"WARNING: {res['scoring_warning']}\n" if res["scoring_warning"] else "")
         + "All rates show k/n with n = planned trials in the group (see docs/METHODOLOGY.md).\n",
         encoding="utf-8")
     return res

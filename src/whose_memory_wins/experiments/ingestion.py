@@ -30,6 +30,7 @@ from ..memory.mem0_store import Mem0Store, sanitize_name
 from ..memory.mock_llm import CountingLLM, MockExtractionLLM
 from ..provenance.register import SourceRegister
 from ..schemas.scenario import Condition, Scenario
+from ..snapshots import write_snapshot
 
 DEFAULT_SCENARIOS = ["EVAL-SPEND-01", "EVAL-SPEND-02", "EVAL-SPEND-04", "EVAL-SUPP-01", "EVAL-SUPP-02",
                      "EVAL-SUPP-03"]
@@ -95,8 +96,8 @@ def ingest_case(scenario: Scenario, cond: Condition, case_dir: Path, register: S
         call_budget["used"] += counting.calls
         store.close()
     (case_dir / "writes.json").write_text(json.dumps(writes, indent=2), encoding="utf-8")
-    result = {"namespace": ns, "status": status, "error": error, "llm_calls": counting.calls,
-              "messages_submitted": len(writes)}
+    result = {"namespace": ns, "scenario_id": scenario.scenario_id, "condition": cond.value, "status": status,
+              "error": error, "llm_calls": counting.calls, "messages_submitted": len(writes)}
     if status != "ok":
         return result
 
@@ -109,11 +110,10 @@ def ingest_case(scenario: Scenario, cond: Condition, case_dir: Path, register: S
         claim_mid = scenario.conditions[cond].messages[0].message_id
         derived = [r for r in register.records_from_message(ns, claim_mid) if r["record_id"] in stored]
         auto = "not_retained" if not derived else None
+        # snapshot_retrieval sets every field (incl. "policy retrieved" = a record derived from a policy
+        # message was retrieved) and then hashes the final content. Do not modify `snap` afterwards.
         snap = snapshot_retrieval(fresh, register, scenario, cond.value, ns, retrieval,
                                   extra={"track": "normal_ingestion", "admission": auto})
-        # In ingestion, "policy retrieved" = a record derived from a policy message was retrieved.
-        snap["policy_retrieved"] = any(r["metadata"].get("wmw_policy_id") in snap["applicable_policy_ids"]
-                                       for r in snap["records"])
     finally:
         fresh.close()
     review = {
@@ -161,7 +161,7 @@ def run_ingestion_study(cfg: dict, *, name: str, scenario_ids: list[str] | None 
             res = ingest_case(s, cond, sdir / "cases" / f"{sid}__{c}", register, cfg, mode == "mock", budget, log)
             if "snapshot" in res:
                 snap = res.pop("snapshot")
-                (sdir / "retrieval" / f"{sid}__{c}.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
+                write_snapshot(sdir / "retrieval" / f"{sid}__{c}.json", snap)
                 review = res.pop("review")
                 (sdir / "admission" / f"{sid}__{c}.json").write_text(json.dumps(review, indent=2), encoding="utf-8")
             cases.append(res)
@@ -175,12 +175,51 @@ def run_ingestion_study(cfg: dict, *, name: str, scenario_ids: list[str] | None 
                                "user_id=<case namespace>, metadata=..., infer=True) - one message per call",
         "ingestion_llm": ("MOCK extraction LLM substituted for Memory.llm (software verification only)"
                           if mode == "mock" else _mem0_llm_config(cfg)),
-        "llm_calls_used": budget["used"], "token_usage": "not reported by Mem0's LLM wrapper (unknown)",
+        "llm_calls_used": budget["used"],
+        "usage_accounting": {
+            "counted": "every call Mem0 makes to its extraction LLM (Memory.llm.generate_response), across all "
+                       "cases of this study, against limits.max_api_calls (hard ceiling, checked before each call)",
+            "not_counted": "tokens and cost: Mem0 does not report token usage, so no token or dollar limit can be "
+                           "enforced for ingestion; embeddings run locally (fastembed) and cost nothing",
+            "separate_from_decisions": "the decision run created from this study has its own usage.json and its "
+                                       "own ceilings",
+        },
         "retrieval": cfg["retrieval"], "cases": cases,
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     (sdir / "study_manifest.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     return sdir
+
+
+def successful_pairs(study_manifest: dict[str, Any]) -> list[tuple[str, str]]:
+    """The exact (scenario_id, condition) cases whose ingestion succeeded and whose snapshot was saved."""
+    pairs = []
+    for c in study_manifest["cases"]:
+        if c["status"] != "ok":
+            continue
+        sid, cond = (c["scenario_id"], c["condition"]) if "scenario_id" in c else c["namespace"].split("__", 1)
+        pairs.append((sid, cond))
+    return pairs
+
+
+def create_decision_run_for_study(cfg: dict, study_dir: Path, *, name: str, reps: int, seed: int,
+                                  configs: list[str] | None = None, run_root: Path | None = None) -> Path:
+    """Schedule decision trials for EXACTLY the successful ingestion cases (never a cross product of
+    their scenario IDs and condition names). Failed cases stay in the study report and its
+    attempted-case denominator; they are listed in the decision-run manifest too."""
+    from .runner import create_run
+    study_dir = Path(study_dir)
+    m = json.loads((study_dir / "study_manifest.json").read_text(encoding="utf-8"))
+    pairs = successful_pairs(m)
+    if not pairs:
+        raise ValueError("no successful ingestion cases; no decision run created")
+    failed = [{"namespace": c["namespace"], "status": c["status"], "error": c.get("error")}
+              for c in m["cases"] if c["status"] != "ok"]
+    return create_run(cfg, name=name, split=m["split"], experiment_kind="ingestion",
+                      snapshot_dir=study_dir / "retrieval", register_path=study_dir / "source_register.sqlite",
+                      pairs=pairs, configs=configs, reps=reps, seed=seed, run_root=run_root,
+                      extra={"ingestion_study": str(study_dir), "ingestion_attempted_cases": len(m["cases"]),
+                             "ingestion_failed_cases": failed})
 
 
 def set_admission_label(study_dir: Path, case: str, label: str, note: str = "") -> None:
@@ -194,20 +233,32 @@ def set_admission_label(study_dir: Path, case: str, label: str, note: str = "") 
 
 
 def admission_summary(study_dir: Path) -> dict[str, Any]:
+    """Admission per attempted case. ``not_retained`` (decided: structurally or by a reviewer) is kept
+    distinct from ``not_reviewed`` (a claim-derived record exists but nobody has judged its meaning)
+    and from ``ingestion_error`` (the case failed; it stays in the attempted denominator)."""
     rows = []
     for p in sorted((Path(study_dir) / "admission").glob("*.json")):
         d = json.loads(p.read_text(encoding="utf-8"))
-        final = d["manual_label"] or d["automatic_decision"] or "unreviewed"
+        final = d["manual_label"] or d["automatic_decision"] or "not_reviewed"
         rows.append({"case": p.stem, "condition": d["condition"], "final": final,
                      "basis": "manual" if d["manual_label"] else ("structural" if d["automatic_decision"] else "none"),
                      "derived_records": len(d["derived_records"])})
     m = json.loads((Path(study_dir) / "study_manifest.json").read_text(encoding="utf-8"))
+    for c in m["cases"]:
+        if c["status"] != "ok":
+            rows.append({"case": c["namespace"], "condition": c["namespace"].split("__", 1)[1],
+                         "final": "ingestion_error", "basis": c.get("error") or c["status"], "derived_records": None})
     attempted = len(m["cases"])
     failed = sum(1 for c in m["cases"] if c["status"] != "ok")
     retained = sum(r["final"] in ("retained", "partially_retained") for r in rows)
-    unreviewed = sum(r["final"] == "unreviewed" for r in rows)
+    not_reviewed = sum(r["final"] == "not_reviewed" for r in rows)
+    notes = []
+    if not_reviewed:
+        notes.append(f"{not_reviewed} case(s) not reviewed")
+    if failed:
+        notes.append(f"{failed} ingestion error(s) counted in the denominator")
     return {"mode": m["mode"], "attempted_cases": attempted, "ingestion_errors": failed,
             "retained": retained, "retained_fully": sum(r["final"] == "retained" for r in rows),
-            "not_retained": sum(r["final"] == "not_retained" for r in rows), "unreviewed": unreviewed,
-            "admission_rate": f"{retained}/{attempted}" + (" (PROVISIONAL: unreviewed cases)" if unreviewed else ""),
+            "not_retained": sum(r["final"] == "not_retained" for r in rows), "not_reviewed": not_reviewed,
+            "admission_rate": f"{retained}/{attempted}" + (" (PROVISIONAL: " + "; ".join(notes) + ")" if notes else ""),
             "rows": rows}
