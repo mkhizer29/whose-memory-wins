@@ -38,10 +38,12 @@ PACKAGES = ("mem0ai", "anthropic", "fastembed", "qdrant-client", "pydantic", "pa
 
 
 def trial_id(scenario_id: str, condition: str, config: str, rep: int) -> str:
+    """Stable trial ID: ``<scenario>__<condition>__<config>__r<rep>``."""
     return f"{scenario_id}__{condition}__{config}__r{rep}"
 
 
 def frozen_check(split: str) -> dict[str, Any]:
+    """Whether the split and prompts still match ``datasets/FROZEN.json`` (held-out integrity)."""
     path = DATASETS / "FROZEN.json"
     if not path.exists():
         return {"frozen": False, "untouched": False, "reason": "dataset not frozen (run `wmw dataset freeze`)"}
@@ -60,6 +62,7 @@ def frozen_check(split: str) -> dict[str, Any]:
 
 
 def environment_info() -> dict[str, Any]:
+    """Python, platform and key package versions, recorded in every manifest."""
     pk = {}
     for p in PACKAGES:
         try:
@@ -146,10 +149,12 @@ def create_run(cfg: dict[str, Any], *, name: str, split: str, experiment_kind: s
 
 
 def load_manifest(run_dir: Path) -> dict[str, Any]:
+    """Read a run's manifest.json."""
     return json.loads((Path(run_dir) / "manifest.json").read_text(encoding="utf-8"))
 
 
 def run_status(run_dir: Path) -> dict[str, Any]:
+    """Progress of a run: finished / failed / budget-stopped / pending, plus usage so far."""
     m = load_manifest(run_dir)
     store = ResultStore(run_dir)
     latest = {r["trial_id"]: r for r in store.latest_attempts()}
@@ -185,6 +190,11 @@ def _scenario_index(split: str) -> tuple[dict[str, Scenario], dict]:
 def execute_trial(spec: dict[str, Any], manifest: dict[str, Any], scenario: Scenario, truth, roles,
                   register: SourceRegister, provider, attempt: int, usage: UsageTracker,
                   sleep: Callable[[float], None] = time.sleep) -> TrialResult:
+    """Run, score and label one trial attempt (does not save it).
+
+    The snapshot is re-verified against the manifest hash before the provider is used.
+    Scoring uses only the action trace; labels and evidence are observational.
+    """
     cfg = manifest["config"]
     snapshot = verify_snapshot_file(Path(spec["snapshot_file"]), spec["snapshot_hash"])
     approvals = register.approvals(spec["namespace"])
@@ -225,6 +235,12 @@ def execute_trial(spec: dict[str, Any], manifest: dict[str, Any], scenario: Scen
 def execute_run(run_dir: Path, *, retry_failed: bool = False, max_trials: int | None = None,
                 limit_overrides: dict[str, int] | None = None, provider=None, log=print,
                 sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Execute or resume a run, saving each trial as soon as it finishes.
+
+    Before any model call it checks the scoring version, every snapshot hash, the
+    dataset hash and the prompt hashes; any mismatch stops the run. Real runs also
+    check the usage ceilings before every trial and every request.
+    """
     run_dir = Path(run_dir)
     m = load_manifest(run_dir)
     cfg = m["config"]

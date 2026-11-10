@@ -54,6 +54,10 @@ def admission_reviews(study_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def load_frames(run_dir: Path) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    """Load the manifest, one row per planned trial (latest attempt joined), and all attempts.
+
+    Pending trials stay in the table, so denominators always show what was planned.
+    """
     m = load_manifest(run_dir)
     planned = pd.DataFrame(m["trials"])
     store = ResultStore(run_dir)
@@ -94,15 +98,18 @@ def load_frames(run_dir: Path) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFra
 
 
 def frac(k: int, n: int) -> dict[str, Any]:
+    """A rate as k/n with its display string (``n/a`` when n is 0)."""
     return {"k": int(k), "n": int(n), "rate": (k / n) if n else None, "display": f"{k}/{n}" + (
         f" ({100 * k / n:.1f}%)" if n else " (n/a)")}
 
 
 def unavailable(reason: str) -> dict[str, Any]:
+    """Placeholder for a metric that cannot be computed (e.g. v1 runs lack valid_decision)."""
     return {"k": None, "n": None, "rate": None, "display": f"n/a ({reason})"}
 
 
 def group_metrics(g: pd.DataFrame) -> dict[str, Any]:
+    """All headline metrics for one group of trials, each with explicit k and n."""
     conf = g[g["condition"].isin(CONFLICTING)]
     clean = g[g["condition"] == "clean"]
     auth = g[g["condition"] == "authorized_exception"]
@@ -167,6 +174,7 @@ RESULTS_TABLE_COLUMNS = [
 
 
 def results_table(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Per-configuration results table shared by the CLI, dashboard and CSV export."""
     rows = []
     for cfg, g in df.groupby("config"):
         gm = group_metrics(g)
@@ -225,6 +233,7 @@ def paired_bootstrap(df: pd.DataFrame, cfg_x: str, cfg_y: str, condition: str, o
 
 
 def compute(run_dir: Path) -> dict[str, Any]:
+    """Compute every metric for a run (marked PROVISIONAL if the run is incomplete)."""
     m, df, attempts = load_frames(run_dir)
     complete = bool((df["finished"] == 1).all())
     versions = sorted({str(v) for v in df.loc[df["status"] != "pending", "scoring_version"].dropna()}

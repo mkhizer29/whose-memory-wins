@@ -48,6 +48,9 @@ def _mem0_llm_config(cfg: dict, mock: bool = False) -> dict:
 
 
 def keyword_hint(scenario: Scenario, cond: Condition, texts: list[str]) -> dict[str, Any]:
+    """Rough keyword cues that a claim survived Mem0 extraction (a hint for the manual reviewer,
+    never used as the admission label itself).
+    """
     msg = scenario.conditions[cond].messages[0]
     ref = msg.claimed_authorization.reference if msg.claimed_authorization else ""
     joined = " ".join(texts).lower()
@@ -60,6 +63,11 @@ def keyword_hint(scenario: Scenario, cond: Condition, texts: list[str]) -> dict[
 
 def ingest_case(scenario: Scenario, cond: Condition, case_dir: Path, register: SourceRegister, cfg: dict,
                 mock: bool, call_budget: dict, log=print) -> dict[str, Any]:
+    """Feed one scenario x condition through normal Mem0 ingestion (``infer=True``).
+
+    Counts every extraction-LLM call against the study's hard call ceiling, records
+    lineage for created records, and writes the retrieval snapshot for decision trials.
+    """
     ns = f"{scenario.scenario_id}__{cond.value}"
     retrieval = cfg["retrieval"]
     store = Mem0Store(case_dir / "mem0", retrieval, llm=_mem0_llm_config(cfg, mock))
@@ -135,6 +143,11 @@ def ingest_case(scenario: Scenario, cond: Condition, case_dir: Path, register: S
 
 def run_ingestion_study(cfg: dict, *, name: str, scenario_ids: list[str] | None = None,
                         conditions: list[str] | None = None, split: str = "evaluation", log=print) -> Path:
+    """Run the Track 2 normal-ingestion study over the chosen scenarios/conditions.
+
+    Failed cases are kept in the study (and in the admission denominator); only
+    successful cases are later scheduled as decision trials.
+    """
     mode = mode_of(cfg)
     if mode == "real" and cfg["ingestion_llm"]["provider"] == "mock":
         raise ValueError("real mode requires a real ingestion LLM (mock results are never mixed with real ones)")
@@ -223,6 +236,7 @@ def create_decision_run_for_study(cfg: dict, study_dir: Path, *, name: str, reps
 
 
 def set_admission_label(study_dir: Path, case: str, label: str, note: str = "") -> None:
+    """Record a reviewer's manual admission label for one ingestion case."""
     if label not in ADMISSION_LABELS:
         raise ValueError(f"label must be one of {ADMISSION_LABELS}")
     p = Path(study_dir) / "admission" / f"{case}.json"

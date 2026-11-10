@@ -17,6 +17,12 @@ from .runner import create_run, load_manifest
 
 def create_removal_run(source_run: Path, scenario_id: str, condition: str, remove: list[str],
                        configs: list[str] | None = None, reps: int = 1, seed: int = 7) -> Path:
+    """Create a memory-removal diagnostic run from an existing run's snapshot.
+
+    The source snapshot is verified against the source manifest first. The chosen
+    records (claim and/or policy) are removed from a COPY, which is re-hashed and
+    used for a new, separate run. The original snapshot is never modified.
+    """
     m = load_manifest(source_run)
     cfg = m["config"]
     snap_file = Path(m["snapshot_dir"]) / f"{scenario_id}__{condition}.json"

@@ -20,6 +20,11 @@ from .base import DecisionProvider, PermanentProviderError, ProviderResponse, Tr
 
 
 class AnthropicProvider(DecisionProvider):
+    """Decision model via the Anthropic Messages API (real mode only).
+
+    The SDK's own retries are disabled (``max_retries=0``) so every request attempt
+    is visible to, and counted by, the harness's bounded retry loop.
+    """
     mode = "real"
     name = "anthropic"
 
@@ -50,6 +55,7 @@ class AnthropicProvider(DecisionProvider):
         return self._client
 
     def create(self, system: str, messages: list[dict[str, Any]], tools: list[dict]) -> ProviderResponse:
+        """Send one Messages API request; map SDK errors to transient or permanent provider errors."""
         a = self._anthropic
         try:
             resp = self.client.messages.create(

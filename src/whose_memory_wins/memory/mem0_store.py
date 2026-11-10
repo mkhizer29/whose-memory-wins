@@ -29,6 +29,7 @@ LIST_LIMIT = 1000
 
 @dataclass
 class ChangeSet:
+    """What a Mem0 call reported, and what actually changed in the store (diffed)."""
     reported: list[dict[str, Any]]                  # what Mem0's add() returned
     created: list[dict[str, Any]] = field(default_factory=list)
     updated: list[dict[str, Any]] = field(default_factory=list)   # {"id", "old", "new"}
@@ -39,6 +40,7 @@ class ChangeSet:
 
 
 def build_mem0_config(store_dir: Path, retrieval: dict, llm: dict | None) -> dict:
+    """Mem0 config: local Qdrant on disk, local fastembed embedder, optional extraction LLM."""
     cfg: dict[str, Any] = {
         "vector_store": {"provider": "qdrant", "config": {
             "collection_name": "wmw", "path": str(store_dir / "qdrant"),
@@ -57,6 +59,7 @@ def build_mem0_config(store_dir: Path, retrieval: dict, llm: dict | None) -> dic
 
 
 class Mem0Store:
+    """Thin wrapper around a local Mem0 ``Memory`` for one store directory."""
     def __init__(self, store_dir: Path, retrieval: dict, llm: dict | None = None):
         from mem0 import Memory  # imported lazily: heavy
 
@@ -68,18 +71,22 @@ class Mem0Store:
 
     # ---- reads -------------------------------------------------------------------------
     def records(self, user_id: str) -> dict[str, dict[str, Any]]:
+        """All records of a namespace, by ID."""
         res = self.memory.get_all(filters={"user_id": user_id}, top_k=LIST_LIMIT)["results"]
         return {r["id"]: r for r in res}
 
     def get(self, record_id: str) -> dict[str, Any] | None:
+        """One record by ID."""
         return self.memory.get(record_id)
 
     def search(self, user_id: str, query: str, top_k: int, threshold: float) -> list[dict[str, Any]]:
+        """Ranked search results for a query within a namespace."""
         res = self.memory.search(query, filters={"user_id": user_id}, top_k=top_k, threshold=threshold)["results"]
         return [{"rank": i + 1, "id": r["id"], "text": r["memory"], "score": r.get("score"),
                  "metadata": r.get("metadata") or {}} for i, r in enumerate(res)]
 
     def namespace_digest(self, user_id: str) -> str:
+        """Hash of a namespace's records (detects unexpected changes)."""
         recs = sorted((r["id"], r["memory"]) for r in self.records(user_id).values())
         return hashlib.sha256(json.dumps(recs).encode()).hexdigest()
 
@@ -118,12 +125,15 @@ class Mem0Store:
                                                              infer=True)["results"])
 
     def update(self, user_id: str, record_id: str, text: str) -> ChangeSet:
+        """Update a record and return what changed."""
         return self._diffed(user_id, lambda: [self.memory.update(record_id, text=text)])
 
     def delete(self, user_id: str, record_id: str) -> ChangeSet:
+        """Delete a record and return what changed."""
         return self._diffed(user_id, lambda: [self.memory.delete(record_id)])
 
     def history(self, record_id: str) -> list[dict[str, Any]]:
+        """Mem0's change history for a record."""
         return self.memory.history(record_id)
 
     def close(self) -> None:
@@ -148,4 +158,5 @@ def sanitize_name(name: str) -> str:
 
 
 def dir_is_store(path: Path) -> bool:
+    """True if the directory already contains a Mem0 store."""
     return (Path(path) / "qdrant").exists() and os.path.exists(Path(path) / "history.db")

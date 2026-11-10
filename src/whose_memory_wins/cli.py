@@ -53,6 +53,7 @@ def _guard_real(cfg: dict, args) -> None:
 
 # --- commands ---------------------------------------------------------------------------
 def cmd_check_config(args) -> None:
+    """``wmw check-config``: validate config, show credentials and enforced limits."""
     cfg = _cfg(args)
     errs = validate_config(cfg)
     from .experiments.usage import describe_limits
@@ -77,6 +78,7 @@ def cmd_check_config(args) -> None:
 
 
 def cmd_dataset_validate(args) -> None:
+    """``wmw dataset validate``: check every split and print its hash."""
     from .dataset import load_split, split_hash, validate_all
     res = validate_all()
     summary = {}
@@ -89,6 +91,7 @@ def cmd_dataset_validate(args) -> None:
 
 
 def cmd_dataset_freeze(args) -> None:
+    """``wmw dataset freeze``: record dataset and prompt hashes before the final run."""
     from .agent.context import prompt_hashes
     from .dataset import DATASETS, SPLITS, split_hash, validate_all
     errs = validate_all()
@@ -107,6 +110,7 @@ def cmd_dataset_freeze(args) -> None:
 
 
 def cmd_fixtures(args) -> None:
+    """``wmw fixtures``: build the Track 1 controlled memory fixture (offline)."""
     from .memory.fixtures import build_controlled_fixture
     cfg = _cfg(args)
     fdir = build_controlled_fixture(args.split, outputs_dir(cfg), cfg["retrieval"], rebuild=args.rebuild)
@@ -119,6 +123,7 @@ def _fixture_for(cfg: dict, split: str) -> Path:
 
 
 def cmd_run_create(args) -> None:
+    """``wmw run create``: write a run manifest (no model calls)."""
     from .experiments.runner import create_run
     cfg = _cfg(args)
     fdir = _fixture_for(cfg, args.split)
@@ -132,6 +137,7 @@ def cmd_run_create(args) -> None:
 
 
 def cmd_run_execute(args) -> None:
+    """``wmw run execute``: execute or resume a run (real mode needs --yes-real)."""
     from .experiments.runner import execute_run, load_manifest
     cfg = _cfg(args)
     run_dir = _resolve_run(cfg, args.run)
@@ -148,11 +154,13 @@ def cmd_run_execute(args) -> None:
 
 
 def cmd_run_status(args) -> None:
+    """``wmw run status``: print a run's progress."""
     from .experiments.runner import run_status
     _print(run_status(_resolve_run(_cfg(args), args.run)))
 
 
 def cmd_run_list(args) -> None:
+    """``wmw run list``: list all runs and diagnostic runs."""
     cfg = _cfg(args)
     from .experiments.runner import run_status
     for root in (outputs_dir(cfg) / "runs", outputs_dir(cfg) / "diagnostics"):
@@ -173,6 +181,7 @@ def analysis_brief(res: dict, out: Path) -> dict:
 
 
 def cmd_analyze(args) -> None:
+    """``wmw analyze``: write metrics, CSVs and charts; print a short summary."""
     from .analysis.report import write_report
     cfg = _cfg(args)
     run_dir = _resolve_run(cfg, args.run)
@@ -182,6 +191,7 @@ def cmd_analyze(args) -> None:
 
 
 def cmd_ingest_run(args) -> None:
+    """``wmw ingest run``: Track 2 ingestion study, then a decision run for successful cases."""
     from .experiments.ingestion import admission_summary, create_decision_run_for_study, run_ingestion_study
     cfg = _cfg(args)
     _guard_real(cfg, args)
@@ -204,6 +214,7 @@ def cmd_ingest_run(args) -> None:
 
 
 def cmd_ingest_review(args) -> None:
+    """``wmw ingest review``: record a manual admission label and print the summary."""
     from .experiments.ingestion import admission_summary, set_admission_label
     sdir = Path(args.study)
     if args.case:
@@ -212,6 +223,7 @@ def cmd_ingest_review(args) -> None:
 
 
 def cmd_diagnose(args) -> None:
+    """``wmw diagnose``: create a memory-removal diagnostic run."""
     from .experiments.diagnostics import create_removal_run
     cfg = _cfg(args)
     run_dir = create_removal_run(_resolve_run(cfg, args.run), args.scenario, args.condition, _csv(args.remove),
@@ -244,11 +256,13 @@ def cmd_demo(args) -> None:
 
 
 def cmd_dashboard(args) -> None:
+    """``wmw dashboard``: start the read-only Streamlit dashboard."""
     app = Path(__file__).parent / "dashboard" / "app.py"
     subprocess.run([sys.executable, "-m", "streamlit", "run", str(app), "--server.headless", "true"], check=False)
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Entry point of the ``wmw`` command."""
     ap = argparse.ArgumentParser(prog="wmw", description="Whose Memory Wins research harness")
     ap.add_argument("--config", help="path to a YAML config (default configs/default.yaml)")
     sub = ap.add_subparsers(dest="cmd", required=True)

@@ -92,6 +92,13 @@ def _roles_section(snapshot: dict[str, Any], roles: RoleCatalog) -> str:
 
 
 def build_context(config: str, scenario: Scenario, snapshot: dict[str, Any], roles: RoleCatalog) -> dict[str, Any]:
+    """Build the model-visible input for one trial under configuration A, B or C.
+
+    A shows the task and the frozen retrieved memory only. B adds the protected policy
+    register. C adds, per retrieved record, the source identity, assigned role and
+    permissions from the source register, plus the permission-handling rules.
+    Returns ``{"system", "messages", "tools"}`` ready for a provider call.
+    """
     if config not in CONFIGS:
         raise ValueError(config)
     parts = [
@@ -112,6 +119,10 @@ def build_context(config: str, scenario: Scenario, snapshot: dict[str, Any], rol
 
 
 def prompt_hashes() -> dict[str, str]:
+    """SHA-256 of the system prompt, authorization rules and tool definitions.
+
+    Stored in every manifest; a run refuses to resume if any of these changed.
+    """
     def h(x) -> str:
         return hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()
     return {"system_prompt": h(SYSTEM_PROMPT), "authorization_rules": h(AUTHORIZATION_RULES),

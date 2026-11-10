@@ -21,6 +21,7 @@ HASH_FIELD = "snapshot_hash"
 
 
 class SnapshotIntegrityError(RuntimeError):
+    """A retrieval snapshot is missing or its content does not match its hash."""
     pass
 
 
@@ -41,6 +42,7 @@ def finalize_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_snapshot(path: Path, snap: dict[str, Any]) -> str:
+    """Hash the final snapshot content, write it to ``path`` and return the hash."""
     finalize_snapshot(snap)
     Path(path).write_text(json.dumps(snap, indent=2), encoding="utf-8")
     return snap[HASH_FIELD]

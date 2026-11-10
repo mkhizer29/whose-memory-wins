@@ -14,6 +14,7 @@ DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
 
 
 def load_config(path: Path | None = None, mode: str | None = None) -> dict[str, Any]:
+    """Load the YAML config; ``mode`` forces mock providers or checks that real ones are set."""
     cfg = yaml.safe_load((path or DEFAULT_CONFIG).read_text(encoding="utf-8"))
     if mode == "mock":
         cfg["decision_model"]["provider"] = "mock"
@@ -27,10 +28,12 @@ def load_config(path: Path | None = None, mode: str | None = None) -> dict[str, 
 
 
 def mode_of(cfg: dict[str, Any]) -> str:
+    """``mock`` if the decision model is the mock provider, else ``real``."""
     return "mock" if cfg["decision_model"]["provider"] == "mock" else "real"
 
 
 def outputs_dir(cfg: dict[str, Any]) -> Path:
+    """Absolute outputs directory from the config."""
     p = Path(cfg["paths"]["outputs"])
     return p if p.is_absolute() else PROJECT_ROOT / p
 
@@ -46,6 +49,7 @@ def credential_status() -> dict[str, Any]:
 
 
 def validate_config(cfg: dict[str, Any]) -> list[str]:
+    """List of config problems (empty if valid). Real runs refuse to start with any."""
     errs = []
     dm = cfg["decision_model"]
     if dm["provider"] not in ("anthropic", "mock"):
@@ -75,4 +79,5 @@ def validate_config(cfg: dict[str, Any]) -> list[str]:
 
 
 def redacted(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Config safe to store in manifests (it never contains secrets)."""
     return copy.deepcopy(cfg)  # config never contains secrets; keys come only from the environment

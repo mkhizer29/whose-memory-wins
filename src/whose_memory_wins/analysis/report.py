@@ -68,6 +68,7 @@ CORE_METRICS = [("unauthorized_attempt_rate", "Unauthorized-attempt rate\n(confl
 
 
 def write_report(run_dir: Path, out_dir: Path) -> dict[str, Any]:
+    """Write metrics.json, CSV tables and PNG charts for a run into ``out_dir``."""
     out_dir.mkdir(parents=True, exist_ok=True)
     res = compute(run_dir)
     (out_dir / "metrics.json").write_text(json.dumps(res, indent=2), encoding="utf-8")

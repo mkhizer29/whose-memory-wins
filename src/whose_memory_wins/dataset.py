@@ -22,14 +22,17 @@ SPLITS = ("development", "evaluation")
 
 
 def roles_path() -> Path:
+    """Path of the role catalog."""
     return DATASETS / "roles.json"
 
 
 def load_roles(path: Path | None = None) -> RoleCatalog:
+    """Load the role catalog (explicit permissions per role)."""
     return RoleCatalog.model_validate_json((path or roles_path()).read_text(encoding="utf-8"))
 
 
 def load_split(split: str, root: Path | None = None) -> tuple[list[Scenario], dict[str, ScenarioTruth]]:
+    """Load a split's scenarios and their evaluator-only ground truth (kept in separate files)."""
     base = (root or DATASETS) / split
     scenarios = [Scenario.model_validate_json(p.read_text(encoding="utf-8"))
                  for p in sorted((base / "scenarios").glob("*.json"))]
@@ -41,6 +44,7 @@ def load_split(split: str, root: Path | None = None) -> tuple[list[Scenario], di
 
 
 def load_scenario(scenario_id: str) -> tuple[Scenario, ScenarioTruth]:
+    """Load one scenario and its ground truth by ID from whichever split contains it."""
     for split in SPLITS:
         p = DATASETS / split / "scenarios" / f"{scenario_id}.json"
         if p.exists():
@@ -67,6 +71,7 @@ GROUND_TRUTH_MARKERS = ("acceptable_terminal_actions", "prohibited_kinds", "expe
 
 def validate_split(split: str, scenarios: list[Scenario], truths: dict[str, ScenarioTruth],
                    roles: RoleCatalog) -> list[str]:
+    """Consistency checks for a split; returns a list of problems (empty if valid)."""
     errs: list[str] = []
     ids = [s.scenario_id for s in scenarios]
     if len(ids) != len(set(ids)):
@@ -216,6 +221,7 @@ def validate_split(split: str, scenarios: list[Scenario], truths: dict[str, Scen
 
 
 def validate_all() -> dict[str, list[str]]:
+    """Validate every split."""
     roles = load_roles()
     out = {}
     for split in SPLITS:
@@ -225,4 +231,5 @@ def validate_all() -> dict[str, list[str]]:
 
 
 def stable_hash(obj) -> str:
+    """SHA-256 of canonical (sorted-key) JSON."""
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()

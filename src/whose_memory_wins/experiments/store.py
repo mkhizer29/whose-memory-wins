@@ -42,6 +42,7 @@ def _normalize(row: dict[str, Any]) -> dict[str, Any]:
 
 
 class ResultStore:
+    """SQLite table of attempts plus one JSON trace per attempt. Rows are only ever added."""
     def __init__(self, run_dir: Path):
         self.run_dir = Path(run_dir)
         (self.run_dir / "traces").mkdir(parents=True, exist_ok=True)
@@ -55,15 +56,18 @@ class ResultStore:
         self.db.close()
 
     def next_attempt(self, trial_id: str) -> int:
+        """Attempt number for the next try of a trial (1 for a new trial)."""
         row = self.db.execute("SELECT MAX(attempt) FROM attempts WHERE trial_id=?", (trial_id,)).fetchone()
         return (row[0] or 0) + 1
 
     def latest(self, trial_id: str) -> dict[str, Any] | None:
+        """Latest attempt of a trial, or None if it has never run."""
         row = self.db.execute("SELECT * FROM attempts WHERE trial_id=? ORDER BY attempt DESC LIMIT 1",
                               (trial_id,)).fetchone()
         return _normalize(dict(row)) if row else None
 
     def save(self, r: TrialResult) -> None:
+        """Write the trace file (atomically) and insert its row. Refuses scoring-version-1 databases."""
         if self.legacy:
             raise RuntimeError(f"{self.run_dir} holds results scored with older rules (scoring version 1); "
                                "new results are never mixed into it. Create a new run.")
@@ -89,12 +93,15 @@ class ResultStore:
         self.db.commit()
 
     def all_attempts(self) -> list[dict[str, Any]]:
+        """Every attempt, including failed ones kept for the audit trail."""
         return [_normalize(dict(r)) for r in self.db.execute("SELECT * FROM attempts ORDER BY trial_id, attempt")]
 
     def latest_attempts(self) -> list[dict[str, Any]]:
+        """The latest attempt of each trial (what metrics are computed from)."""
         q = ("SELECT a.* FROM attempts a JOIN (SELECT trial_id, MAX(attempt) m FROM attempts GROUP BY trial_id) b "
              "ON a.trial_id=b.trial_id AND a.attempt=b.m ORDER BY a.trial_id")
         return [_normalize(dict(r)) for r in self.db.execute(q)]
 
     def load_trace(self, trace_file: str) -> dict[str, Any]:
+        """Load one saved JSON trace."""
         return json.loads((self.run_dir / trace_file).read_text(encoding="utf-8"))

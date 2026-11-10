@@ -28,6 +28,11 @@ POLICIES = ("gullible", "cautious", "self_correcting", "malformed", "flaky")
 
 
 class MockProvider(DecisionProvider):
+    """Offline, rule-based stand-in for the decision model (software verification only).
+
+    Its behaviour is scripted by ``policy`` (gullible, cautious, self_correcting, malformed, flaky). Mock results
+    say nothing about how Claude behaves and are never mixed with real runs.
+    """
     mode = "mock"
     name = "mock"
 

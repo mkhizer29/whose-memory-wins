@@ -29,17 +29,20 @@ from ..agent.loop import BudgetExceeded
 
 
 def dollar_threshold(pricing: dict[str, Any]) -> float | None:
+    """The configured stop-after dollar threshold, or None."""
     # ``max_cost_usd`` is the pre-fix name of the same setting (kept readable for old manifests).
     v = pricing.get("stop_after_cost_usd")
     return v if v is not None else pricing.get("max_cost_usd")
 
 
 def prices_known(pricing: dict[str, Any]) -> bool:
+    """True only if both input and output prices are configured."""
     return (pricing.get("usd_per_million_input_tokens") is not None
             and pricing.get("usd_per_million_output_tokens") is not None)
 
 
 def describe_limits(limits: dict[str, Any], pricing: dict[str, Any]) -> dict[str, str]:
+    """Plain-language description of which limits are enforced and how strictly."""
     thr = dollar_threshold(pricing)
     if thr is None:
         dollar = "none configured"
@@ -58,6 +61,7 @@ def describe_limits(limits: dict[str, Any], pricing: dict[str, Any]) -> dict[str
 
 
 class UsageTracker:
+    """Cumulative decision-model usage of one run, persisted to usage.json after every call."""
     def __init__(self, path: Path, limits: dict[str, Any], pricing: dict[str, Any]):
         self.path = Path(path)
         self.limits = limits
@@ -75,6 +79,7 @@ class UsageTracker:
                              encoding="utf-8")
 
     def cost_usd(self, input_tokens: int | None = None, output_tokens: int | None = None) -> float | None:
+        """Estimated cost in USD from configured prices, or None if prices are missing."""
         if not prices_known(self.pricing):
             return None
         pi, po = self.pricing["usd_per_million_input_tokens"], self.pricing["usd_per_million_output_tokens"]
@@ -83,6 +88,7 @@ class UsageTracker:
         return round(i / 1e6 * pi + o / 1e6 * po, 6)
 
     def exceeded(self) -> str | None:
+        """Reason a ceiling has already been reached, or None."""
         s, lim = self.state, self.limits
         if s["api_calls"] >= lim["max_api_calls"]:
             return f"API call ceiling reached ({s['api_calls']}/{lim['max_api_calls']})"
@@ -113,6 +119,7 @@ class UsageTracker:
         return None
 
     def can_start_trial(self, worst_case_calls: int) -> str | None:
+        """Reason a new trial must not start (ceilings, or too little call budget left), or None."""
         reason = self.exceeded()
         if reason:
             return reason
@@ -122,11 +129,13 @@ class UsageTracker:
         return None
 
     def before_call(self, est_input_tokens: int = 0, max_output_tokens: int = 0) -> None:
+        """Raise ``BudgetExceeded`` unless the next request, at its worst-case size, fits every limit."""
         reason = self.exceeded() or self.reservation_problem(est_input_tokens, max_output_tokens)
         if reason:
             raise BudgetExceeded(reason)
 
     def after_call(self, input_tokens: int, output_tokens: int, failed: bool = False) -> None:
+        """Count one request attempt and its reported tokens (failed attempts count as calls)."""
         self.state["api_calls"] += 1
         self.state["input_tokens"] += input_tokens
         self.state["output_tokens"] += output_tokens

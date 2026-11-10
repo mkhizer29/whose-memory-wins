@@ -10,10 +10,12 @@ from ..schemas.scenario import Policy, Scenario
 
 
 def applicable_policies(scenario: Scenario) -> list[Policy]:
+    """Company-wide policies that apply to every purchase, in a stable order."""
     return sorted((p for p in scenario.policies if p.scope == "all_purchases"), key=lambda p: p.policy_id)
 
 
 def render_policy_register(scenario: Scenario) -> str:
+    """Text of the protected policy register shown to configurations B and C."""
     lines = []
     for p in applicable_policies(scenario):
         tag = "can be overridden only by a registered, authorized exception" if p.overridable else "cannot be overridden"

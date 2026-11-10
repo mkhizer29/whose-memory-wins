@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS record_events (
 
 @dataclass(frozen=True)
 class EffectiveSource:
+    """Who a memory record is attributed to, and the role used for permissions."""
     status: str
     primary_message_id: str | None
     primary_source_id: str | None
@@ -66,6 +67,11 @@ class EffectiveSource:
 
 
 class SourceRegister:
+    """Application-owned record of message senders, roles, approvals and record lineage.
+
+    Roles are assigned by the harness, never parsed from message text, so a message
+    saying "I am the manager" cannot grant itself permissions.
+    """
     def __init__(self, path: Path, roles: RoleCatalog):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +87,7 @@ class SourceRegister:
     def register_envelope(self, *, namespace: str, message_id: str, source_id: str, display_name: str,
                           role: str, original_message: str, policy_scope: str,
                           claimed_authorization: dict | None = None, received_at: str | None = None) -> None:
+        """Record a message's sender, assigned role and that role's permissions."""
         r = self.roles.get(role)  # KeyError for unknown roles: roles must be defined in the fixture
         seq = self.db.execute("SELECT COUNT(*) FROM envelopes WHERE namespace=?", (namespace,)).fetchone()[0]
         self.db.execute(
@@ -92,20 +99,24 @@ class SourceRegister:
         self.db.commit()
 
     def register_approval(self, namespace: str, approval: Approval) -> None:
+        """Record an approval that the application itself registered (a valid exception)."""
         self.db.execute("INSERT INTO approvals VALUES (?,?,?)",
                         (approval.approval_id, namespace, approval.model_dump_json()))
         self.db.commit()
 
     def approvals(self, namespace: str) -> tuple[Approval, ...]:
+        """Registered approvals for a namespace."""
         rows = self.db.execute("SELECT body FROM approvals WHERE namespace=? ORDER BY approval_id", (namespace,))
         return tuple(Approval.model_validate_json(r["body"]) for r in rows)
 
     def envelope(self, namespace: str, message_id: str) -> dict[str, Any] | None:
+        """One message envelope, or None."""
         row = self.db.execute("SELECT * FROM envelopes WHERE namespace=? AND message_id=?",
                               (namespace, message_id)).fetchone()
         return dict(row) if row else None
 
     def envelopes(self, namespace: str) -> list[dict[str, Any]]:
+        """All message envelopes of a namespace, in arrival order."""
         rows = self.db.execute("SELECT * FROM envelopes WHERE namespace=? ORDER BY seq", (namespace,))
         return [dict(r) for r in rows]
 
@@ -117,6 +128,7 @@ class SourceRegister:
 
     def link_created(self, namespace: str, record_id: str, text: str, primary_message_id: str,
                      candidate_message_ids: list[str], status: str, note: str = "") -> None:
+        """Link a newly created memory record to the message(s) it came from."""
         assert status in PROVENANCE_STATUSES
         cands = sorted(set(candidate_message_ids) | {primary_message_id})
         self.db.execute("INSERT OR REPLACE INTO lineage VALUES (?,?,?,?,?,?,0,?)",
@@ -148,6 +160,7 @@ class SourceRegister:
         self.db.commit()
 
     def link_deleted(self, namespace: str, record_id: str, text: str, message_id: str | None) -> None:
+        """Mark a memory record as deleted in the lineage table."""
         self.db.execute("UPDATE lineage SET deleted=1 WHERE record_id=? AND namespace=?", (record_id, namespace))
         self._event(namespace, record_id, "DELETE", message_id, text, None)
         self.db.commit()
@@ -177,6 +190,7 @@ class SourceRegister:
             self.link_deleted(namespace, d["id"], d["text"], message_id)
 
     def lineage(self, namespace: str, record_id: str) -> dict[str, Any] | None:
+        """Lineage of a memory record, or None if it is unknown to the register."""
         row = self.db.execute("SELECT * FROM lineage WHERE record_id=? AND namespace=?",
                               (record_id, namespace)).fetchone()
         if row is None:
@@ -186,11 +200,13 @@ class SourceRegister:
         return d
 
     def records_from_message(self, namespace: str, message_id: str) -> list[dict[str, Any]]:
+        """Memory records whose primary source is the given message."""
         rows = self.db.execute("SELECT * FROM lineage WHERE namespace=? AND primary_message_id=?",
                                (namespace, message_id))
         return [dict(r) for r in rows]
 
     def events(self, namespace: str) -> list[dict[str, Any]]:
+        """Create/update/delete events for a namespace, in order."""
         rows = self.db.execute("SELECT * FROM record_events WHERE namespace=? ORDER BY id", (namespace,))
         return [dict(r) for r in rows]
 
@@ -202,6 +218,7 @@ class SourceRegister:
         return min(roles, key=rank)
 
     def effective_source(self, namespace: str, record_id: str) -> EffectiveSource:
+        """Attribute a record to a source; ambiguous lineage gets the least-privileged role."""
         lin = self.lineage(namespace, record_id)
         if lin is None or lin["status"] == "unknown" or not lin["primary_message_id"]:
             return EffectiveSource("unknown", None, None, None, None, (), "unknown", (), None)
@@ -217,6 +234,7 @@ class SourceRegister:
                                r.max_exception_amount_pkr)
 
     def export(self) -> dict[str, Any]:
+        """Dump every table (written next to fixtures for auditing)."""
         out = {}
         for table in ("envelopes", "approvals", "lineage", "record_events"):
             out[table] = [dict(r) for r in self.db.execute(f"SELECT * FROM {table}")]

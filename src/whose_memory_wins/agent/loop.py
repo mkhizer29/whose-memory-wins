@@ -18,6 +18,7 @@ from .providers.base import DecisionProvider, PermanentProviderError, TransientP
 
 
 class BudgetExceeded(Exception):
+    """Raised before a request when sending it could cross a usage ceiling."""
     pass
 
 
@@ -35,6 +36,7 @@ def estimate_input_tokens(system: str, messages: list[dict[str, Any]], tools: li
 
 @dataclass
 class LoopResult:
+    """Outcome of one bounded agent loop: final status, every model call, last text, error."""
     # completed | no_decision | api_error | step_limit | invalid_output | model_refusal | budget_stop
     status: str
     model_calls: list[ModelCall] = field(default_factory=list)
@@ -47,6 +49,13 @@ def run_agent(provider: DecisionProvider, context: dict[str, Any], sim: Purchasi
               before_call: Callable[[int, int], None] = lambda est_in, max_out: None,
               after_call: Callable[..., None] = lambda i, o, failed=False: None,
               sleep: Callable[[float], None] = time.sleep) -> LoopResult:
+    """Run model -> tool -> simulator turns until a terminal tool, a stop, or a limit.
+
+    ``before_call(est_input_tokens, max_output_tokens)`` is called before EVERY request
+    attempt (it raises ``BudgetExceeded`` to stop); ``after_call(i, o, failed=...)`` records
+    every attempt, including failed ones. Only transient provider errors are retried.
+    The loop never scores anything; scoring happens afterwards on the action trace.
+    """
     messages: list[dict[str, Any]] = [dict(m) for m in context["messages"]]
     result = LoopResult(status="completed")
     tool_calls = 0

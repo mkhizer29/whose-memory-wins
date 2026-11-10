@@ -41,6 +41,11 @@ def _matches(action: ToolAction, acc: AcceptableAction) -> bool:
 
 def score_trial(truth: ConditionTruth, actions: list[ToolAction], terminal: ToolAction | None,
                 status: str) -> Score:
+    """Score one trial from its action trace and the evaluator-only ground truth.
+
+    Success requires status ``completed``, no prohibited attempt anywhere in the trace,
+    and a terminal action matching an acceptable action with the required arguments.
+    """
     prohibited = [a for a in actions if a.valid_schema and a.verdict_kind in truth.prohibited_kinds]
     kinds = sorted({a.verdict_kind for a in prohibited})
     decisions = decision_attempts(actions)

@@ -16,6 +16,11 @@ from .definitions import ARG_MODELS, TERMINAL_TOOLS
 
 
 class PurchasingSimulator:
+    """Simulated purchasing system that executes (or blocks) the model's tool calls.
+
+    Every call is recorded as a ``ToolAction`` with schema validity, the policy
+    verdict and whether it was executed. Nothing real is ever bought or sent.
+    """
     def __init__(self, scenario: Scenario, approvals: tuple[Approval, ...], roles: RoleCatalog):
         self.scenario = scenario
         self.approvals = approvals
@@ -25,6 +30,7 @@ class PurchasingSimulator:
         self._req_counter = 0
 
     def handle(self, tool: str, raw_input: Any, tool_use_id: str, model_call_index: int) -> ToolAction:
+        """Validate one tool call, apply the policy engine, record it and return the tool result."""
         action = ToolAction(index=len(self.actions), model_call_index=model_call_index, tool_use_id=tool_use_id,
                             tool=tool, raw_input=raw_input if isinstance(raw_input, dict) else {"_raw": raw_input},
                             valid_schema=False)

@@ -27,6 +27,7 @@ from .mem0_store import Mem0Store
 
 
 def namespace(scenario_id: str, condition: str) -> str:
+    """Memory namespace for one scenario x condition (each has its own isolated Mem0 store)."""
     return f"{scenario_id}__{condition}"
 
 
@@ -42,10 +43,12 @@ FIXTURE_LAYOUT_VERSION = 2  # v2: one Mem0 store per namespace (see namespace_st
 
 
 def fixture_id(split: str, retrieval: dict) -> str:
+    """Fixture ID derived from the dataset hash and retrieval settings (changes if either changes)."""
     return f"{split}-{split_hash(split)[:10]}-{stable_hash([retrieval, FIXTURE_LAYOUT_VERSION])[:6]}"
 
 
 def fixture_dir(outputs: Path, fid: str) -> Path:
+    """Directory of a controlled (Track 1) fixture under outputs/."""
     return outputs / "fixtures" / "controlled" / fid
 
 
@@ -90,6 +93,13 @@ def populate_namespace(store: Mem0Store, register: SourceRegister, scenario: Sce
 
 def snapshot_retrieval(store: Mem0Store, register: SourceRegister, scenario: Scenario, condition: str, ns: str,
                        retrieval: dict, extra: dict | None = None) -> dict[str, Any]:
+    """Run the task's memory search once and freeze the result as a snapshot.
+
+    Records which retrieved records came from the claim message (via source-register
+    lineage), whether policy text was retrieved, and the registered approvals. The
+    snapshot is hashed last (``finalize_snapshot``), so every A/B/C trial sees exactly
+    the same retrieved memory and any later edit is detected.
+    """
     hits = store.search(ns, scenario.task.retrieval_query, retrieval["top_k"], retrieval["threshold"])
     approvals = register.approvals(ns)
     all_recs = store.records(ns)
@@ -144,6 +154,10 @@ def snapshot_retrieval(store: Mem0Store, register: SourceRegister, scenario: Sce
 def build_controlled_fixture(split: str, outputs: Path, retrieval: dict, rebuild: bool = False,
                              roles: RoleCatalog | None = None, scenario_ids: list[str] | None = None,
                              log=print) -> Path:
+    """Build (or reuse) the Track 1 fixture for a split: insert records into Mem0,
+    register sources/approvals/lineage, and write one retrieval snapshot per
+    scenario x condition. Offline; uses the local embedding model.
+    """
     roles = roles or load_roles()
     fid = fixture_id(split, retrieval)
     fdir = fixture_dir(outputs, fid)
@@ -201,4 +215,5 @@ def _has(mod: str) -> bool:
 
 
 def load_snapshot(fdir: Path, scenario_id: str, condition: str) -> dict[str, Any]:
+    """Read a snapshot WITHOUT verifying it (for display only; trials use verify_snapshot_file)."""
     return json.loads((fdir / "retrieval" / f"{namespace(scenario_id, condition)}.json").read_text(encoding="utf-8"))
